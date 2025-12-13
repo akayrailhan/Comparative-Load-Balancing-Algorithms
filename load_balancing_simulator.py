@@ -1,425 +1,287 @@
 """
-Comparative Analysis of Load Balancing Algorithms in Cloud Environments
+Comparative Analysis of Load Balancing Algorithms
 Simulated Implementation in Python
 """
 
 import random
 import time
-import numpy as np
-import matplotlib.pyplot as plt
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from typing import List, Dict, Tuple
-from enum import Enum
 import statistics
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
+from enum import Enum
+import matplotlib.pyplot as plt
+import numpy as np
 
 
-class ServerStatus(Enum):
-    IDLE = "idle"
-    BUSY = "busy"
-    OVERLOADED = "overloaded"
+class LoadBalancingStrategy(Enum):
+    """Load balancing algorithm types"""
+    ROUND_ROBIN = "round_robin"
+    WEIGHTED_ROUND_ROBIN = "weighted_round_robin"
+    LEAST_CONNECTIONS = "least_connections"
+    LEAST_LOAD = "least_load"
+    IP_HASH = "ip_hash"
+    RANDOM = "random"
+    LEAST_RESPONSE_TIME = "least_response_time"
 
 
 @dataclass
 class Server:
-    """Represents a cloud server"""
-    id: int
-    capacity: int
+    """Represents a server in the load balancer pool"""
+    server_id: int
+    capacity: int = 100
     current_load: int = 0
-    total_requests_handled: int = 0
+    total_requests: int = 0
     total_response_time: float = 0.0
-    processing_power: float = 1.0  # Relative processing power
     active_connections: int = 0
-    request_queue: deque = field(default_factory=deque)
+    weight: int = 1
     
     @property
-    def load_percentage(self) -> float:
+    def utilization(self) -> float:
         return (self.current_load / self.capacity) * 100 if self.capacity > 0 else 0
     
     @property
-    def status(self) -> ServerStatus:
-        if self.load_percentage < 50:
-            return ServerStatus.IDLE
-        elif self.load_percentage < 80:
-            return ServerStatus. BUSY
-        else:
-            return ServerStatus.OVERLOADED
+    def avg_response_time(self) -> float:
+        return (self.total_response_time / self.total_requests 
+                if self.total_requests > 0 else 0)
     
-    @property
-    def average_response_time(self) -> float:
-        return self.total_response_time / self.total_requests_handled if self.total_requests_handled > 0 else 0
-
-
-@dataclass
-class Request:
-    """Represents a client request"""
-    id: int
-    arrival_time: float
-    processing_time: float
-    client_ip: str
-    completion_time: float = 0.0
-    assigned_server: int = -1
+    def can_accept_request(self) -> bool:
+        return self.current_load < self.capacity
     
-    @property
-    def response_time(self) -> float:
-        return self. completion_time - self.arrival_time if self.completion_time > 0 else 0
+    def process_request(self, request_type: str = "cpu", complexity: int = 5) -> float:
+        base_time = {'cpu': 0.1, 'memory': 0.05, 'io': 0.15}.get(request_type, 0.1)
+        processing_time = base_time * complexity * random.uniform(0.8, 1.2)
+        
+        self.current_load += 1
+        self.active_connections += 1
+        self.total_requests += 1
+        
+        time.sleep(processing_time / 10)
+        
+        self.current_load = max(0, self.current_load - 1)
+        self.active_connections = max(0, self.active_connections - 1)
+        self.total_response_time += processing_time
+        
+        return processing_time
 
 
-class LoadBalancingAlgorithm:
-    """Base class for load balancing algorithms"""
+class LoadBalancer:
+    """Base load balancer implementation"""
     
-    def __init__(self, servers:  List[Server]):
+    def __init__(self, servers: List[Server], strategy: LoadBalancingStrategy):
         self.servers = servers
-        self.metrics = {
-            'requests_processed': 0,
-            'total_response_time': 0.0,
-            'server_utilization': [],
-            'rejected_requests': 0
-        }
-    
-    def select_server(self, request: Request) -> Server:
-        raise NotImplementedError
-    
-    def update_metrics(self):
-        self.metrics['server_utilization'] = [s.load_percentage for s in self.servers]
-
-
-class RoundRobinLB(LoadBalancingAlgorithm):
-    """Round Robin Load Balancing"""
-    
-    def __init__(self, servers: List[Server]):
-        super().__init__(servers)
-        self.current_index = 0
-    
-    def select_server(self, request: Request) -> Server:
-        server = self.servers[self.current_index]
-        self.current_index = (self.current_index + 1) % len(self.servers)
-        return server
-
-
-class WeightedRoundRobinLB(LoadBalancingAlgorithm):
-    """Weighted Round Robin based on server capacity"""
-    
-    def __init__(self, servers: List[Server]):
-        super().__init__(servers)
-        self.weights = [s.capacity for s in servers]
+        self.strategy = strategy
+        self.total_requests = 0
+        self.successful_requests = 0
+        self.failed_requests = 0
         self.current_index = 0
         self.current_weight = 0
-        self.max_weight = max(self.weights)
-        self.gcd_weight = self._gcd_list(self.weights)
+        
+    def route_request(self, client_ip: Optional[str] = None) -> Optional[Server]:
+        self.total_requests += 1
+        
+        if self.strategy == LoadBalancingStrategy.ROUND_ROBIN:
+            return self._round_robin()
+        elif self.strategy == LoadBalancingStrategy.WEIGHTED_ROUND_ROBIN:
+            return self._weighted_round_robin()
+        elif self.strategy == LoadBalancingStrategy.LEAST_CONNECTIONS:
+            return self._least_connections()
+        elif self.strategy == LoadBalancingStrategy.LEAST_LOAD:
+            return self._least_load()
+        elif self.strategy == LoadBalancingStrategy.IP_HASH:
+            return self._ip_hash(client_ip)
+        elif self.strategy == LoadBalancingStrategy.RANDOM:
+            return self._random()
+        elif self.strategy == LoadBalancingStrategy.LEAST_RESPONSE_TIME:
+            return self._least_response_time()
+        
+        return None
     
-    def _gcd(self, a: int, b:  int) -> int:
-        while b:
-            a, b = b, a % b
-        return a
+    def _round_robin(self) -> Optional[Server]:
+        attempts = 0
+        while attempts < len(self.servers):
+            server = self.servers[self.current_index]
+            self.current_index = (self.current_index + 1) % len(self.servers)
+            if server.can_accept_request():
+                return server
+            attempts += 1
+        return None
     
-    def _gcd_list(self, weights: List[int]) -> int:
-        result = weights[0]
-        for w in weights[1:]:
-            result = self._gcd(result, w)
-        return result
-    
-    def select_server(self, request: Request) -> Server:
+    def _weighted_round_robin(self) -> Optional[Server]:
+        max_weight = max(s.weight for s in self.servers)
         while True:
             self.current_index = (self.current_index + 1) % len(self.servers)
             if self.current_index == 0:
-                self.current_weight -= self.gcd_weight
-                if self.current_weight <= 0:
-                    self.current_weight = self.max_weight
-            
-            if self.weights[self.current_index] >= self.current_weight:
-                return self.servers[self.current_index]
+                self.current_weight = (self.current_weight - 1) % max_weight + 1
+            server = self.servers[self.current_index]
+            if server.weight >= self.current_weight and server.can_accept_request():
+                return server
+            if self.current_weight == 1:
+                available = [s for s in self.servers if s.can_accept_request()]
+                return available[0] if available else None
+    
+    def _least_connections(self) -> Optional[Server]:
+        available = [s for s in self.servers if s.can_accept_request()]
+        return min(available, key=lambda s: s.active_connections) if available else None
+    
+    def _least_load(self) -> Optional[Server]:
+        available = [s for s in self.servers if s.can_accept_request()]
+        return min(available, key=lambda s: s.current_load) if available else None
+    
+    def _ip_hash(self, client_ip: Optional[str]) -> Optional[Server]:
+        if not client_ip:
+            client_ip = f"192.168.1.{random.randint(1, 255)}"
+        hash_value = hash(client_ip)
+        index = hash_value % len(self.servers)
+        if self.servers[index].can_accept_request():
+            return self.servers[index]
+        return self._round_robin()
+    
+    def _random(self) -> Optional[Server]:
+        available = [s for s in self.servers if s.can_accept_request()]
+        return random.choice(available) if available else None
+    
+    def _least_response_time(self) -> Optional[Server]:
+        available = [s for s in self.servers if s.can_accept_request()]
+        if not available:
+            return None
+        def score(server):
+            response_time = server.avg_response_time if server.avg_response_time > 0 else 1
+            return server.utilization * response_time
+        return min(available, key=score)
 
 
-class LeastConnectionLB(LoadBalancingAlgorithm):
-    """Least Connection Load Balancing"""
+def run_simulation(num_servers: int = 5, num_requests: int = 100, 
+                   strategy: LoadBalancingStrategy = LoadBalancingStrategy.ROUND_ROBIN) -> Dict:
+    servers = [Server(server_id=i, capacity=random.randint(50, 150), 
+                     weight=random.randint(1, 5)) for i in range(num_servers)]
+    lb = LoadBalancer(servers, strategy)
+    start_time = time.time()
+    response_times = []
     
-    def select_server(self, request: Request) -> Server:
-        return min(self.servers, key=lambda s: s.active_connections)
+    for i in range(num_requests):
+        server = lb.route_request(client_ip=f"192.168.1.{i % 255}")
+        if server:
+            request_type = random.choice(['cpu', 'memory', 'io'])
+            complexity = random.randint(1, 10)
+            processing_time = server.process_request(request_type, complexity)
+            response_times.append(processing_time)
+            lb.successful_requests += 1
+        else:
+            lb.failed_requests += 1
+    
+    total_time = time.time() - start_time
+    
+    return {
+        'strategy': strategy.value,
+        'total_requests': num_requests,
+        'successful_requests': lb.successful_requests,
+        'failed_requests': lb.failed_requests,
+        'total_time': total_time,
+        'throughput': num_requests / total_time if total_time > 0 else 0,
+        'avg_response_time': statistics.mean(response_times) if response_times else 0,
+        'median_response_time': statistics.median(response_times) if response_times else 0,
+        'min_response_time': min(response_times) if response_times else 0,
+        'max_response_time': max(response_times) if response_times else 0,
+        'server_stats': [{'server_id': s.server_id, 'capacity': s.capacity,
+                         'total_requests': s.total_requests, 'utilization': s.utilization,
+                         'avg_response_time': s.avg_response_time} for s in servers]
+    }
 
 
-class LeastLoadLB(LoadBalancingAlgorithm):
-    """Least Load (Current Load) Load Balancing"""
+def compare_algorithms(num_servers: int = 5, num_requests: int = 100):
+    strategies = list(LoadBalancingStrategy)
+    results = {}
+    print("Running comparative analysis...")
+    print("=" * 60)
     
-    def select_server(self, request: Request) -> Server:
-        return min(self. servers, key=lambda s: s.current_load)
+    for strategy in strategies:
+        print(f"\nTesting {strategy.value}...")
+        result = run_simulation(num_servers, num_requests, strategy)
+        results[strategy.value] = result
+        print(f"  Successful: {result['successful_requests']}/{result['total_requests']}")
+        print(f"  Avg Response Time: {result['avg_response_time']:.4f}s")
+        print(f"  Throughput: {result['throughput']:.2f} req/s")
+    
+    visualize_comparison(results)
+    return results
 
 
-class IPHashLB(LoadBalancingAlgorithm):
-    """IP Hash Load Balancing"""
+def visualize_comparison(results: Dict):
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle('Load Balancing Algorithms Comparison', fontsize=16, fontweight='bold')
+    strategies = list(results.keys())
     
-    def select_server(self, request: Request) -> Server:
-        hash_value = hash(request.client_ip)
-        server_index = hash_value % len(self.servers)
-        return self.servers[server_index]
-
-
-class RandomLB(LoadBalancingAlgorithm):
-    """Random Load Balancing"""
+    ax = axes[0, 0]
+    response_times = [results[s]['avg_response_time'] for s in strategies]
+    ax.bar(range(len(strategies)), response_times, color='skyblue')
+    ax.set_xticks(range(len(strategies)))
+    ax.set_xticklabels([s.replace('_', '\n') for s in strategies], fontsize=8)
+    ax.set_ylabel('Time (seconds)')
+    ax.set_title('Average Response Time')
+    ax.grid(axis='y', alpha=0.3)
     
-    def select_server(self, request: Request) -> Server:
-        return random.choice(self. servers)
-
-
-class LeastResponseTimeLB(LoadBalancingAlgorithm):
-    """Least Response Time Load Balancing"""
+    ax = axes[0, 1]
+    throughputs = [results[s]['throughput'] for s in strategies]
+    ax.bar(range(len(strategies)), throughputs, color='lightgreen')
+    ax.set_xticks(range(len(strategies)))
+    ax.set_xticklabels([s.replace('_', '\n') for s in strategies], fontsize=8)
+    ax.set_ylabel('Requests/Second')
+    ax.set_title('Throughput')
+    ax.grid(axis='y', alpha=0.3)
     
-    def select_server(self, request: Request) -> Server:
-        # Combine current load and average response time
-        def score(server:  Server) -> float:
-            avg_response = server.average_response_time if server.average_response_time > 0 else 1.0
-            return server.load_percentage * avg_response
-        
-        return min(self.servers, key=score)
-
-
-class CloudLoadBalancerSimulator:
-    """Main simulator for cloud load balancing"""
+    ax = axes[0, 2]
+    success_rates = [(results[s]['successful_requests'] / results[s]['total_requests']) * 100 
+                    for s in strategies]
+    ax.bar(range(len(strategies)), success_rates, color='lightcoral')
+    ax.set_xticks(range(len(strategies)))
+    ax.set_xticklabels([s.replace('_', '\n') for s in strategies], fontsize=8)
+    ax.set_ylabel('Success Rate (%)')
+    ax.set_title('Success Rate')
+    ax.set_ylim([0, 105])
+    ax.grid(axis='y', alpha=0.3)
     
-    def __init__(self, num_servers: int = 5, server_capacity_range:  Tuple[int, int] = (50, 100)):
-        self.servers = self._initialize_servers(num_servers, server_capacity_range)
-        self.requests:  List[Request] = []
-        self.current_time = 0.0
-        self.results:  Dict[str, Dict] = {}
+    first_strategy = strategies[0]
+    ax = axes[1, 0]
+    server_requests = [s['total_requests'] for s in results[first_strategy]['server_stats']]
+    server_ids = [s['server_id'] for s in results[first_strategy]['server_stats']]
+    ax.bar(server_ids, server_requests, color='plum')
+    ax.set_xlabel('Server ID')
+    ax.set_ylabel('Number of Requests')
+    ax.set_title(f'Request Distribution\n({first_strategy})')
+    ax.grid(axis='y', alpha=0.3)
     
-    def _initialize_servers(self, num_servers: int, capacity_range: Tuple[int, int]) -> List[Server]:
-        servers = []
-        for i in range(num_servers):
-            capacity = random.randint(*capacity_range)
-            processing_power = random.uniform(0.8, 1.2)
-            servers.append(Server(id=i, capacity=capacity, processing_power=processing_power))
-        return servers
+    ax = axes[1, 1]
+    mins = [results[s]['min_response_time'] for s in strategies]
+    maxs = [results[s]['max_response_time'] for s in strategies]
+    x = np.arange(len(strategies))
+    width = 0.35
+    ax.bar(x - width/2, mins, width, label='Min', color='lightblue')
+    ax.bar(x + width/2, maxs, width, label='Max', color='orange')
+    ax.set_xticks(range(len(strategies)))
+    ax.set_xticklabels([s.replace('_', '\n') for s in strategies], fontsize=8)
+    ax.set_ylabel('Time (seconds)')
+    ax.set_title('Min/Max Response Times')
+    ax.legend()
+    ax.grid(axis='y', alpha=0.3)
     
-    def generate_requests(self, num_requests: int, arrival_rate: float = 1.0):
-        """Generate requests with exponential inter-arrival times"""
-        self.requests = []
-        current_time = 0.0
-        
-        for i in range(num_requests):
-            # Exponential inter-arrival time
-            inter_arrival = random.expovariate(arrival_rate)
-            current_time += inter_arrival
-            
-            # Random processing time
-            processing_time = random.expovariate(1.0)
-            
-            # Random client IP
-            client_ip = f"192.168.{random. randint(1, 255)}.{random.randint(1, 255)}"
-            
-            request = Request(
-                id=i,
-                arrival_time=current_time,
-                processing_time=processing_time,
-                client_ip=client_ip
-            )
-            self.requests. append(request)
+    ax = axes[1, 2]
+    utilizations = [s['utilization'] for s in results[first_strategy]['server_stats']]
+    ax.bar(server_ids, utilizations, color='gold')
+    ax.set_xlabel('Server ID')
+    ax.set_ylabel('Utilization (%)')
+    ax.set_title(f'Server Utilization\n({first_strategy})')
+    ax.grid(axis='y', alpha=0.3)
     
-    def simulate(self, algorithm:  LoadBalancingAlgorithm, algorithm_name: str):
-        """Run simulation with a specific algorithm"""
-        # Reset servers
-        for server in self.servers:
-            server.current_load = 0
-            server.total_requests_handled = 0
-            server. total_response_time = 0.0
-            server.active_connections = 0
-            server.request_queue.clear()
-        
-        completed_requests = []
-        rejected_requests = 0
-        
-        for request in self.requests:
-            # Select server using the algorithm
-            server = algorithm.select_server(request)
-            
-            # Check if server can handle the request
-            if server.current_load + request.processing_time > server.capacity:
-                rejected_requests += 1
-                continue
-            
-            # Assign request to server
-            request.assigned_server = server.id
-            server.active_connections += 1
-            server.current_load += request.processing_time
-            
-            # Simulate processing
-            completion_time = request.arrival_time + (request.processing_time / server. processing_power)
-            request.completion_time = completion_time
-            
-            # Update server metrics
-            server.total_requests_handled += 1
-            server.total_response_time += request.response_time
-            server.active_connections -= 1
-            
-            completed_requests.append(request)
-        
-        # Calculate metrics
-        response_times = [r.response_time for r in completed_requests]
-        server_loads = [s.current_load for s in self.servers]
-        server_utilizations = [s.load_percentage for s in self.servers]
-        
-        self.results[algorithm_name] = {
-            'completed_requests': len(completed_requests),
-            'rejected_requests': rejected_requests,
-            'average_response_time': statistics.mean(response_times) if response_times else 0,
-            'median_response_time': statistics.median(response_times) if response_times else 0,
-            'std_response_time': statistics.stdev(response_times) if len(response_times) > 1 else 0,
-            'min_response_time': min(response_times) if response_times else 0,
-            'max_response_time': max(response_times) if response_times else 0,
-            'server_utilization': server_utilizations,
-            'average_utilization': statistics.mean(server_utilizations),
-            'load_balance_score': 1 / (statistics.stdev(server_utilizations) + 1) if server_utilizations else 0,
-            'throughput': len(completed_requests) / (self.requests[-1].arrival_time if self.requests else 1),
-            'server_requests':  [s.total_requests_handled for s in self.servers]
-        }
-    
-    def run_all_algorithms(self, num_requests: int = 1000):
-        """Run simulation for all algorithms"""
-        print(f"Generating {num_requests} requests...")
-        self.generate_requests(num_requests)
-        
-        algorithms = [
-            (RoundRobinLB(self._clone_servers()), "Round Robin"),
-            (WeightedRoundRobinLB(self._clone_servers()), "Weighted Round Robin"),
-            (LeastConnectionLB(self._clone_servers()), "Least Connection"),
-            (LeastLoadLB(self._clone_servers()), "Least Load"),
-            (IPHashLB(self._clone_servers()), "IP Hash"),
-            (RandomLB(self._clone_servers()), "Random"),
-            (LeastResponseTimeLB(self._clone_servers()), "Least Response Time")
-        ]
-        
-        for algorithm, name in algorithms:
-            print(f"Running {name} algorithm...")
-            self.simulate(algorithm, name)
-    
-    def _clone_servers(self) -> List[Server]:
-        """Create fresh copies of servers for each simulation"""
-        return [Server(id=s.id, capacity=s.capacity, processing_power=s.processing_power) 
-                for s in self.servers]
-    
-    def print_results(self):
-        """Print detailed results"""
-        print("\n" + "="*80)
-        print("COMPARATIVE ANALYSIS OF LOAD BALANCING ALGORITHMS")
-        print("="*80 + "\n")
-        
-        for algo_name, metrics in self.results.items():
-            print(f"\n{algo_name}")
-            print("-" * 40)
-            print(f"  Completed Requests: {metrics['completed_requests']}")
-            print(f"  Rejected Requests: {metrics['rejected_requests']}")
-            print(f"  Average Response Time: {metrics['average_response_time']:.4f}s")
-            print(f"  Median Response Time:  {metrics['median_response_time']:.4f}s")
-            print(f"  Std Dev Response Time: {metrics['std_response_time']:.4f}s")
-            print(f"  Min Response Time: {metrics['min_response_time']:.4f}s")
-            print(f"  Max Response Time: {metrics['max_response_time']:. 4f}s")
-            print(f"  Average Server Utilization: {metrics['average_utilization']:.2f}%")
-            print(f"  Load Balance Score: {metrics['load_balance_score']:.4f}")
-            print(f"  Throughput: {metrics['throughput']:.2f} req/s")
-    
-    def visualize_results(self):
-        """Create visualization of results"""
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('Comparative Analysis of Load Balancing Algorithms', fontsize=16, fontweight='bold')
-        
-        algo_names = list(self.results.keys())
-        
-        # 1. Average Response Time
-        ax = axes[0, 0]
-        response_times = [self.results[name]['average_response_time'] for name in algo_names]
-        bars = ax.bar(range(len(algo_names)), response_times, color='skyblue')
-        ax.set_xlabel('Algorithm')
-        ax.set_ylabel('Time (seconds)')
-        ax.set_title('Average Response Time')
-        ax.set_xticks(range(len(algo_names)))
-        ax.set_xticklabels(algo_names, rotation=45, ha='right')
-        ax.grid(axis='y', alpha=0.3)
-        
-        # 2. Throughput
-        ax = axes[0, 1]
-        throughputs = [self.results[name]['throughput'] for name in algo_names]
-        bars = ax.bar(range(len(algo_names)), throughputs, color='lightgreen')
-        ax.set_xlabel('Algorithm')
-        ax.set_ylabel('Requests/Second')
-        ax.set_title('Throughput')
-        ax.set_xticks(range(len(algo_names)))
-        ax.set_xticklabels(algo_names, rotation=45, ha='right')
-        ax.grid(axis='y', alpha=0.3)
-        
-        # 3. Average Server Utilization
-        ax = axes[0, 2]
-        utilizations = [self.results[name]['average_utilization'] for name in algo_names]
-        bars = ax.bar(range(len(algo_names)), utilizations, color='lightcoral')
-        ax.set_xlabel('Algorithm')
-        ax.set_ylabel('Utilization (%)')
-        ax.set_title('Average Server Utilization')
-        ax.set_xticks(range(len(algo_names)))
-        ax.set_xticklabels(algo_names, rotation=45, ha='right')
-        ax.grid(axis='y', alpha=0.3)
-        
-        # 4. Load Balance Score
-        ax = axes[1, 0]
-        lb_scores = [self.results[name]['load_balance_score'] for name in algo_names]
-        bars = ax.bar(range(len(algo_names)), lb_scores, color='plum')
-        ax.set_xlabel('Algorithm')
-        ax.set_ylabel('Score')
-        ax.set_title('Load Balance Score (Higher is Better)')
-        ax.set_xticks(range(len(algo_names)))
-        ax.set_xticklabels(algo_names, rotation=45, ha='right')
-        ax.grid(axis='y', alpha=0.3)
-        
-        # 5. Server Utilization Distribution
-        ax = axes[1, 1]
-        x = np.arange(len(self.servers))
-        width = 0.12
-        for i, algo_name in enumerate(algo_names):
-            utilizations = self.results[algo_name]['server_utilization']
-            offset = width * (i - len(algo_names)/2)
-            ax.bar(x + offset, utilizations, width, label=algo_name)
-        ax.set_xlabel('Server ID')
-        ax.set_ylabel('Utilization (%)')
-        ax.set_title('Server Utilization Distribution')
-        ax.set_xticks(x)
-        ax.legend(fontsize=8)
-        ax.grid(axis='y', alpha=0.3)
-        
-        # 6. Request Distribution
-        ax = axes[1, 2]
-        x = np.arange(len(self. servers))
-        width = 0.12
-        for i, algo_name in enumerate(algo_names):
-            requests = self.results[algo_name]['server_requests']
-            offset = width * (i - len(algo_names)/2)
-            ax.bar(x + offset, requests, width, label=algo_name)
-        ax.set_xlabel('Server ID')
-        ax.set_ylabel('Number of Requests')
-        ax.set_title('Request Distribution Across Servers')
-        ax.set_xticks(x)
-        ax.legend(fontsize=8)
-        ax.grid(axis='y', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig('load_balancing_analysis.png', dpi=300, bbox_inches='tight')
-        print("\nVisualization saved as 'load_balancing_analysis.png'")
-        plt.show()
-
-
-def main():
-    """Main execution function"""
-    print("Cloud Load Balancing Simulator")
-    print("="*80)
-    
-    # Create simulator with 5 servers
-    simulator = CloudLoadBalancerSimulator(num_servers=5, server_capacity_range=(50, 100))
-    
-    # Run simulations
-    simulator.run_all_algorithms(num_requests=1000)
-    
-    # Print results
-    simulator.print_results()
-    
-    # Visualize results
-    simulator.visualize_results()
+    plt.tight_layout()
+    plt.savefig('load_balancing_comparison.png', dpi=300, bbox_inches='tight')
+    print("\nVisualization saved as 'load_balancing_comparison.png'")
+    plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    print("Load Balancing Simulator")
+    print("=" * 60)
+    results = compare_algorithms(num_servers=5, num_requests=200)
+    print("\n" + "=" * 60)
+    print("Simulation complete!")
+    print("Check 'load_balancing_comparison.png' for visualization")
